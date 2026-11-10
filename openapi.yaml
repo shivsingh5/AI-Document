@@ -1,0 +1,924 @@
+openapi: 3.0.3
+info:
+  title: Document Processing API
+  version: 1.0.0
+  description: Upload supported documents, extract fixed fields with a local LLM, and search parsed content.
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+tags:
+  - name: Health
+  - name: Documents
+paths:
+  /:
+    get:
+      tags:
+        - Health
+      summary: Check that the API is running
+      responses:
+        "200":
+          description: The API is running.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: Document upload API is running.
+  /api/documents/upload:
+    post:
+      tags:
+        - Documents
+      summary: Upload and parse a document
+      description: >-
+        Upload one PDF, CSV, XLSX, or DOCX file. Files are processed in memory,
+        used to extract State, Zip Code, and Net Income with the configured
+        local LLM, stored in the MongoDB `extractions` collection, and stored
+        in the configured S3 bucket without a public ACL. Files are limited to
+        10 MB. Access is still governed by the bucket's policy. The uploaded
+        file must use the `file` field.
+      operationId: uploadDocument
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: A PDF, CSV, XLSX, or DOCX document (maximum 10 MB).
+      responses:
+        "201":
+          description: Document uploaded and processed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadSuccess"
+              examples:
+                csv:
+                  summary: Parsed CSV rows
+                  value:
+                    success: true
+                    message: Document uploaded and processed successfully
+                    data:
+                      documentId: 190802af-f020-4bd6-b349-369ae61505a3
+                      fileName: employees.csv
+                      fileType: csv
+                      content:
+                        - text: "Name: John, Department: Engineering, Salary: 80000"
+                          row: 2
+                          metadata:
+                            values:
+                              Name: John
+                              Department: Engineering
+                              Salary: "80000"
+                      createdAt: "2026-11-10T13:39:14.301Z"
+                      storage:
+                        provider: s3
+                        key: documents/190802af-f020-4bd6-b349-369ae61505a3/employees.csv
+                pdf:
+                  summary: Extracted PDF text
+                  value:
+                    success: true
+                    message: Document uploaded and processed successfully
+                    data:
+                      documentId: 893cb6f9-e1de-480a-9b47-7a774e47320c
+                      fileName: report.pdf
+                      fileType: pdf
+                      content:
+                        - text: Extracted document text
+                          metadata:
+                            pageCount: 2
+                      createdAt: "2026-11-10T13:39:14.301Z"
+                      storage:
+                        provider: s3
+                        key: documents/893cb6f9-e1de-480a-9b47-7a774e47320c/report.pdf
+        "400":
+          description: Missing file or invalid/malformed document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                missingFile:
+                  value:
+                    success: false
+                    message: No file uploaded. Attach a PDF, CSV, XLSX, or DOCX using the 'file' field.
+                invalidFile:
+                  value:
+                    success: false
+                    message: CSV file is malformed.
+        "413":
+          description: Uploaded file exceeds the 10 MB limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                success: false
+                message: File exceeds the 10 MB upload limit.
+        "415":
+          description: Unsupported file extension.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                success: false
+                message: Unsupported file type. Upload a PDF, CSV, XLSX, or DOCX file.
+        "500":
+          description: Unexpected server error or missing S3 bucket configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                success: false
+                message: S3_BUCKET is not configured.
+        "502":
+          description: S3 could not store the uploaded object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                success: false
+                message: Failed to store the document in S3.
+  /api/documents/upload-url:
+    post:
+      tags:
+        - Documents
+      summary: Create a private, presigned S3 upload form
+      description: >-
+        Creates a five-minute S3 POST form for one PDF, CSV, XLSX, or DOCX.
+        The form policy limits the object to 10 MB and requires server-side
+        encryption. The object remains private; the presigned form is a
+        temporary bearer capability to upload to one generated object key.
+      operationId: createDocumentUploadUrl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - fileName
+              properties:
+                fileName:
+                  type: string
+                  maxLength: 255
+                  example: employees.csv
+      responses:
+        "201":
+          description: Temporary S3 upload form created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignedUploadSuccess"
+              example:
+                success: true
+                message: Presigned upload form created
+                data:
+                  documentId: 190802af-f020-4bd6-b349-369ae61505a3
+                  fileName: employees.csv
+                  fileType: csv
+                  upload:
+                    method: POST
+                    url: https://document791.s3.amazonaws.com/
+                    expiresIn: 300
+                    fields:
+                      key: documents/190802af-f020-4bd6-b349-369ae61505a3/employees.csv
+                      Content-Type: text/csv; charset=utf-8
+                      x-amz-server-side-encryption: AES256
+                      bucket: document791
+                      Policy: <signed-policy>
+                      X-Amz-Algorithm: AWS4-HMAC-SHA256
+                      X-Amz-Credential: <signed-credential>
+                      X-Amz-Date: <signed-date>
+                      X-Amz-Signature: <signed-signature>
+                  storage:
+                    provider: s3
+                    key: documents/190802af-f020-4bd6-b349-369ae61505a3/employees.csv
+        "400":
+          description: Missing or invalid fileName.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: Unsupported file extension.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Missing S3 configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Could not create the presigned S3 form.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/documents/complete:
+    post:
+      tags:
+        - Documents
+      summary: Complete and parse a direct S3 upload
+      description: >-
+        Call after posting the returned form fields and file to S3. The server
+        reads the private object from S3, validates and parses it, and returns
+        the normalized document. Requires s3:GetObject permission.
+      operationId: completeDocumentUpload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentId
+                - fileName
+              properties:
+                documentId:
+                  type: string
+                  format: uuid
+                fileName:
+                  type: string
+                  maxLength: 255
+            example:
+              documentId: 190802af-f020-4bd6-b349-369ae61505a3
+              fileName: employees.csv
+      responses:
+        "200":
+          description: Uploaded document was retrieved and parsed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadSuccess"
+        "400":
+          description: Invalid request or uploaded file content.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Object has not been uploaded to S3 yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: Uploaded object exceeds the 10 MB limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: Unsupported file extension.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Missing S3 configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Could not read the object from S3.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: MongoDB is not configured or available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/documents/{documentId}:
+    get:
+      tags:
+        - Documents
+      summary: Get stored document details
+      description: Returns parsed metadata and content from MongoDB. Does not return an S3 URL.
+      operationId: getDocument
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Document details.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: "#/components/schemas/DocumentContent"
+        "400":
+          description: Invalid document ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: MongoDB is not configured or available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/documents/{documentId}/search:
+    post:
+      tags:
+        - Documents
+      summary: Find keyword-related passages with the local LLM
+      description: >-
+        Searches the parsed document content stored in MongoDB using Ollama.
+        Provide 1–20 keywords. Results include excerpts verified against the
+        stored text and their page or row references. The search covers at most
+        32 text sections; oversized documents return 413. Ollama must be running
+        and the configured model must be available.
+      operationId: searchDocumentKeywords
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - keywords
+              properties:
+                keywords:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  example:
+                    - contract date
+                    - termination clause
+      responses:
+        "200":
+          description: Keyword search results with source references.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentKeywordSearchSuccess"
+              example:
+                success: true
+                message: Document keyword search completed
+                data:
+                  documentId: 190802af-f020-4bd6-b349-369ae61505a3
+                  fileName: contract.pdf
+                  keywords:
+                    - termination clause
+                  matches:
+                    - keyword: termination clause
+                      excerpt: Either party may terminate this agreement with 30 days' written notice.
+                      source:
+                        contentIndex: 2
+                        page: 2
+                  unmatchedKeywords: []
+        "400":
+          description: Invalid document ID or keywords.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The document contains more than 32 searchable text sections.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Ollama returned an invalid response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: MongoDB or the local Ollama service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/documents/{documentId}/extractions:
+    get:
+      tags:
+        - Documents
+      summary: Get extracted document fields
+      description: Returns one MongoDB extraction record per field (State, Zip Code, Net Income, and Entity Name).
+      operationId: getDocumentExtractions
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Individual extracted-value records and their supporting source text.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentExtractionsSuccess"
+        "400":
+          description: Invalid document ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No extraction record exists for the document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: MongoDB is not configured or available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags:
+        - Documents
+      summary: Run or retry fixed-field extraction
+      description: Extracts State, Zip Code, Net Income, and Entity Name from the parsed document, then upserts one record per field in MongoDB's extractions collection.
+      operationId: extractDocumentFields
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Individual field records extracted and saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentExtractionsSuccess"
+        "400":
+          description: Invalid document ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The document contains more than 32 searchable text sections.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Ollama returned an invalid response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: MongoDB or the local Ollama service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/documents/{documentId}/download-url:
+    get:
+      tags:
+        - Documents
+      summary: Create a short-lived private S3 download URL
+      description: >-
+        Creates a five-minute presigned GET URL on demand. The URL is not stored
+        in MongoDB. Anyone holding the URL can use it until it expires.
+      operationId: getDocumentDownloadUrl
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Temporary download URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignedDownloadSuccess"
+              example:
+                success: true
+                data:
+                  documentId: 190802af-f020-4bd6-b349-369ae61505a3
+                  fileName: employees.csv
+                  url: https://document791.s3.eu-north-1.amazonaws.com/documents/...
+                  expiresIn: 300
+                  expiresAt: "2026-11-10T13:44:14.301Z"
+        "400":
+          description: Invalid document ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Document metadata not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Could not create a signed S3 URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: MongoDB is not configured or available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    DocumentType:
+      type: string
+      enum:
+        - pdf
+        - csv
+        - xlsx
+        - docx
+    DocumentContentItem:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+        page:
+          type: integer
+          description: Page reference, when provided by the parser.
+        row:
+          type: integer
+          description: Original row number for CSV or Excel content.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Parser-specific metadata, such as page count or row values.
+    DocumentContent:
+      type: object
+      required:
+        - documentId
+        - fileName
+        - fileType
+        - content
+        - createdAt
+        - storage
+      properties:
+        documentId:
+          type: string
+          format: uuid
+        fileName:
+          type: string
+        fileType:
+          $ref: "#/components/schemas/DocumentType"
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentContentItem"
+        createdAt:
+          type: string
+          format: date-time
+        storage:
+          type: object
+          required:
+            - provider
+            - key
+          properties:
+            provider:
+              type: string
+              enum:
+                - s3
+            key:
+              type: string
+              description: Private object key in the configured S3 bucket.
+    UploadSuccess:
+      type: object
+      required:
+        - success
+        - message
+        - data
+      properties:
+        success:
+          type: boolean
+          enum:
+            - true
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/DocumentContent"
+    PresignedUploadSuccess:
+      type: object
+      required:
+        - success
+        - message
+        - data
+      properties:
+        success:
+          type: boolean
+          enum:
+            - true
+        message:
+          type: string
+        data:
+          type: object
+          required:
+            - documentId
+            - fileName
+            - fileType
+            - upload
+            - storage
+          properties:
+            documentId:
+              type: string
+              format: uuid
+            fileName:
+              type: string
+            fileType:
+              $ref: "#/components/schemas/DocumentType"
+            upload:
+              type: object
+              required:
+                - method
+                - url
+                - fields
+                - expiresIn
+              properties:
+                method:
+                  type: string
+                  enum:
+                    - POST
+                url:
+                  type: string
+                  format: uri
+                fields:
+                  type: object
+                  additionalProperties:
+                    type: string
+                expiresIn:
+                  type: integer
+                  description: Presigned form validity in seconds.
+            storage:
+              type: object
+              required:
+                - provider
+                - key
+              properties:
+                provider:
+                  type: string
+                  enum:
+                    - s3
+                key:
+                  type: string
+    PresignedDownloadSuccess:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum:
+            - true
+        data:
+          type: object
+          required:
+            - documentId
+            - fileName
+            - url
+            - expiresIn
+            - expiresAt
+          properties:
+            documentId:
+              type: string
+              format: uuid
+            fileName:
+              type: string
+            url:
+              type: string
+              format: uri
+              description: Temporary bearer URL, valid for five minutes.
+            expiresIn:
+              type: integer
+              example: 300
+            expiresAt:
+              type: string
+              format: date-time
+    DocumentKeywordSearchSuccess:
+      type: object
+      required:
+        - success
+        - message
+        - data
+      properties:
+        success:
+          type: boolean
+          enum:
+            - true
+        message:
+          type: string
+        data:
+          type: object
+          required:
+            - documentId
+            - fileName
+            - keywords
+            - matches
+            - unmatchedKeywords
+          properties:
+            documentId:
+              type: string
+              format: uuid
+            fileName:
+              type: string
+            keywords:
+              type: array
+              items:
+                type: string
+            matches:
+              type: array
+              items:
+                type: object
+                required:
+                  - keyword
+                  - excerpt
+                  - source
+                properties:
+                  keyword:
+                    type: string
+                  excerpt:
+                    type: string
+                    description: Exact excerpt from the stored document content.
+                  source:
+                    type: object
+                    required:
+                      - contentIndex
+                    properties:
+                      contentIndex:
+                        type: integer
+                        description: One-based index into the document content array.
+                      page:
+                        type: integer
+                      row:
+                        type: integer
+                      part:
+                        type: integer
+            unmatchedKeywords:
+              type: array
+              items:
+                type: string
+    DocumentExtractionsSuccess:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum:
+            - true
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/StoredExtraction"
+    StoredExtraction:
+      type: object
+      required:
+        - documentId
+        - fileName
+        - field
+        - value
+        - evidence
+        - source
+        - createdAt
+        - updatedAt
+      properties:
+        documentId:
+          type: string
+          format: uuid
+        fileName:
+          type: string
+        field:
+          type: string
+          enum:
+            - state
+            - zipCode
+            - netIncome
+            - entityName
+        value:
+          type: string
+          nullable: true
+        evidence:
+          type: string
+          nullable: true
+        source:
+          $ref: "#/components/schemas/FieldExtraction/properties/source"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    FieldExtraction:
+      type: object
+      required:
+        - value
+        - evidence
+        - source
+      properties:
+        value:
+          type: string
+          nullable: true
+          description: Extracted value exactly as written, or null if not found.
+        evidence:
+          type: string
+          nullable: true
+          description: Supporting verbatim text, or null if not found.
+        source:
+          type: object
+          nullable: true
+          description: Parsed content location for the evidence, or null if not found.
+          required:
+            - contentIndex
+          properties:
+            contentIndex:
+              type: integer
+              description: One-based index into the document content array.
+            page:
+              type: integer
+            row:
+              type: integer
+            part:
+              type: integer
+    Error:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          enum:
+            - false
+        message:
+          type: string
