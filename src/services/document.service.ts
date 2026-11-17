@@ -3,6 +3,7 @@ import { extname } from "node:path";
 import { parseCsv } from "../parsers/csv.parser.js";
 import { parseDocx } from "../parsers/docx.parser.js";
 import { parseExcel } from "../parsers/excel.parser.js";
+import { parseImage } from "../parsers/image.parser.js";
 import { parsePdf } from "../parsers/pdf.parser.js";
 import {
   createDocumentUploadPost,
@@ -12,15 +13,18 @@ import {
   storeDocumentInS3,
 } from "./s3.service.js";
 import {
+  deleteDocumentData,
   findDocumentById,
   findDocumentExtractions,
+  listDocuments as listStoredDocuments,
   saveDocument,
   saveDocumentExtractions,
 } from "../repositories/document.repository.js";
 import {
-  extractDocumentFields,
   searchDocumentKeywords as findKeywordMatches,
+  verifyFieldCandidates,
 } from "./llm.service.js";
+import { extractDocumentFieldCandidates } from "./document-field-extractor.service.js";
 import {
   DocumentProcessingError,
   type DocumentContent,
@@ -29,6 +33,38 @@ import {
 
 type DocumentFile = Pick<Express.Multer.File, "originalname" | "buffer" | "size">;
 type ParsedDocument = Omit<DocumentContent, "storage">;
+
+async function extractFields(
+  document: Pick<ParsedDocument, "fileType" | "content">,
+) {
+  return verifyFieldCandidates(
+    extractDocumentFieldCandidates(document.content),
+  );
+}
+
+const supportedImageExtensions = new Set([
+  ".bmp",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".tif",
+  ".tiff",
+]);
+
+function isSupportedImage(buffer: Buffer): boolean {
+  return (
+    (buffer[0] === 0x89 &&
+      buffer.subarray(1, 4).equals(Buffer.from("PNG")) &&
+      buffer[4] === 0x0d &&
+      buffer[5] === 0x0a &&
+      buffer[6] === 0x1a &&
+      buffer[7] === 0x0a) ||
+    (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) ||
+    buffer.subarray(0, 2).equals(Buffer.from("BM")) ||
+    buffer.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00])) ||
+    buffer.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a]))
+  );
+}
 
 export function getDocumentType(fileName: string): DocumentType {
   const extension = extname(fileName).toLowerCase();
@@ -43,8 +79,12 @@ export function getDocumentType(fileName: string): DocumentType {
     case ".docx":
       return "docx";
     default:
+      if (supportedImageExtensions.has(extension)) {
+        return "image";
+      }
+
       throw new DocumentProcessingError(
-        "Unsupported file type. Upload a PDF, CSV, XLSX, or DOCX file.",
+        "Unsupported file type. Upload a PDF, CSV, XLSX, DOCX, PNG, JPG, TIFF, or BMP file.",
         415,
       );
   }
@@ -111,7 +151,15 @@ async function parseDocument(
     throw new DocumentProcessingError("Uploaded file is empty.");
   }
 
-  if (extension === ".pdf") {
+  if (fileType === "image") {
+    if (!isSupportedImage(file.buffer)) {
+      throw new DocumentProcessingError(
+        "File extension indicates an image, but the file content is not a supported image.",
+      );
+    }
+
+    content = await parseImage(file.buffer);
+  } else if (extension === ".pdf") {
     if (!isPdf) {
       throw new DocumentProcessingError(
         "File extension is .pdf, but the file content is not a valid PDF.",
@@ -146,7 +194,7 @@ async function parseDocument(
     content = await parseDocx(file.buffer);
   } else {
     throw new DocumentProcessingError(
-      "Unsupported file type. Upload a PDF, CSV, XLSX, or DOCX file.",
+      "Unsupported file type. Upload a PDF, CSV, XLSX, DOCX, PNG, JPG, TIFF, or BMP file.",
       415,
     );
   }
@@ -165,22 +213,30 @@ export async function processDocument(
 ): Promise<DocumentContent> {
   const documentId = randomUUID();
   const document = await parseDocument(file, documentId);
-  const fields = await extractDocumentFields(document.content);
-  const storage = await storeDocumentInS3(
-    file,
-    documentId,
-    document.fileType,
-  );
+  const fields = await extractFields(document);
 
   const processedDocument: DocumentContent = {
     ...document,
     storage: {
       provider: "s3",
-      key: storage.key,
+      key: getDocumentObjectKey(documentId, file.originalname),
     },
   };
-  await saveDocument(processedDocument);
-  await saveDocumentFields(processedDocument, fields);
+  try {
+    await saveDocument(processedDocument);
+    await saveDocumentFields(processedDocument, fields);
+    await storeDocumentInS3(file, documentId, document.fileType);
+  } catch (error) {
+    try {
+      await deleteDocumentData(documentId);
+    } catch (cleanupError) {
+      console.error(
+        "Failed to clean up incomplete document records after direct upload failure:",
+        cleanupError,
+      );
+    }
+    throw error;
+  }
   return processedDocument;
 }
 
@@ -195,7 +251,7 @@ export async function completeDocumentUpload(
     { originalname: fileName, buffer, size: buffer.length },
     documentId,
   );
-  const fields = await extractDocumentFields(document.content);
+  const fields = await extractFields(document);
 
   const processedDocument: DocumentContent = {
     ...document,
@@ -208,7 +264,7 @@ export async function completeDocumentUpload(
 
 async function saveDocumentFields(
   document: DocumentContent,
-  fields: Awaited<ReturnType<typeof extractDocumentFields>>,
+  fields: Awaited<ReturnType<typeof extractFields>>,
 ) {
   const now = new Date();
   await saveDocumentExtractions({
@@ -224,6 +280,10 @@ export async function getDocumentDetails(documentId: string) {
   return findDocumentById(documentId);
 }
 
+export async function getDocuments() {
+  return listStoredDocuments();
+}
+
 export async function getDocumentExtractions(documentId: string) {
   return findDocumentExtractions(documentId);
 }
@@ -234,7 +294,7 @@ export async function reprocessDocumentExtractions(documentId: string) {
     throw new DocumentProcessingError("Document was not found.", 404);
   }
 
-  const fields = await extractDocumentFields(document.content);
+  const fields = await extractFields(document);
   const existing = await findDocumentExtractions(documentId);
   const now = new Date();
   await saveDocumentExtractions({

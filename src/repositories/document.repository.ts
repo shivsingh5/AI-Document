@@ -57,6 +57,57 @@ export async function findDocumentById(
   }
 }
 
+export async function deleteDocumentData(documentId: string): Promise<void> {
+  const [documents, extractions] = await Promise.all([
+    getDocumentsCollection(),
+    getExtractionsCollection(),
+  ]);
+  try {
+    await Promise.all([
+      documents.deleteOne({ documentId }),
+      extractions.deleteMany({ documentId }),
+    ]);
+  } catch (error) {
+    throw new MongoStorageError(
+      "Could not remove incomplete document records from MongoDB.",
+      { cause: error },
+    );
+  }
+}
+
+export async function listDocuments(limit = 100): Promise<
+  Array<{
+    documentId: string;
+    fileName: string;
+    fileType: DocumentContent["fileType"];
+    createdAt: Date;
+  }>
+> {
+  const collection = await getDocumentsCollection();
+  try {
+    return await collection
+      .find(
+        {},
+        {
+          projection: {
+            _id: 0,
+            documentId: 1,
+            fileName: 1,
+            fileType: 1,
+            createdAt: 1,
+          },
+        },
+      )
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
+  } catch (error) {
+    throw new MongoStorageError("Could not retrieve the document list from MongoDB.", {
+      cause: error,
+    });
+  }
+}
+
 export async function saveDocumentExtractions(
   extractions: {
     documentId: string;

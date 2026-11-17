@@ -4,6 +4,7 @@ import express, {
   type Response,
 } from "express";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import multer from "multer";
 import swaggerUi from "swagger-ui-express";
 import { parse } from "yaml";
@@ -16,14 +17,19 @@ import { LlmServiceError } from "./services/llm.service.js";
 const app = express();
 const openApiYaml = readFileSync(new URL("../openapi.yaml", import.meta.url), "utf8");
 const openApiSpec = parse(openApiYaml);
+const frontendDirectory = fileURLToPath(new URL("../public/", import.meta.url));
 
 app.use(express.json({ limit: "16kb" }));
 app.get("/", (_request: Request, response: Response) => {
+  response.sendFile(fileURLToPath(new URL("../public/index.html", import.meta.url)));
+});
+app.get("/health", (_request: Request, response: Response) => {
   response.send("Document upload API is running.");
 });
 app.get("/openapi.yaml", (_request: Request, response: Response) => {
   response.type("application/yaml").send(openApiYaml);
 });
+app.use(express.static(frontendDirectory));
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
 app.use("/api/documents", documentRouter);
 

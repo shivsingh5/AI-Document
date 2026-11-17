@@ -14,6 +14,18 @@ paths:
     get:
       tags:
         - Health
+      summary: Open the document processing frontend
+      responses:
+        "200":
+          description: The document processing frontend.
+          content:
+            text/html:
+              schema:
+                type: string
+  /health:
+    get:
+      tags:
+        - Health
       summary: Check that the API is running
       responses:
         "200":
@@ -29,10 +41,12 @@ paths:
         - Documents
       summary: Upload and parse a document
       description: >-
-        Upload one PDF, CSV, XLSX, or DOCX file. Files are processed in memory,
-        used to extract State, Zip Code, and Net Income with the configured
-        local LLM, stored in the MongoDB `extractions` collection, and stored
-        in the configured S3 bucket without a public ACL. Files are limited to
+        Upload one PDF, CSV, XLSX,         DOCX, PNG, JPG, TIFF, or BMP file. Images and scanned PDF pages are
+        OCR-processed locally. Parsed text is searched for the configured
+        keys, and only the extracted values and evidence are sent to the
+        configured local LLM for verification. Results are stored in the
+        MongoDB `extractions` collection, and the original file is stored in
+        the configured S3 bucket without a public ACL. Files are limited to
         10 MB. Access is still governed by the bucket's policy. The uploaded
         file must use the `file` field.
       operationId: uploadDocument
@@ -48,7 +62,7 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: A PDF, CSV, XLSX, or DOCX document (maximum 10 MB).
+                  description: A PDF, CSV, XLSX, DOCX, PNG, JPG, TIFF, or BMP document (maximum 10 MB).
       responses:
         "201":
           description: Document uploaded and processed successfully.
@@ -105,7 +119,7 @@ paths:
                 missingFile:
                   value:
                     success: false
-                    message: No file uploaded. Attach a PDF, CSV, XLSX, or DOCX using the 'file' field.
+                    message: No file uploaded. Attach a supported document or image using the 'file' field.
                 invalidFile:
                   value:
                     success: false
@@ -127,7 +141,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 success: false
-                message: Unsupported file type. Upload a PDF, CSV, XLSX, or DOCX file.
+                message: Unsupported file type. Upload a PDF, CSV, XLSX, DOCX, PNG, JPG, TIFF, or BMP file.
         "500":
           description: Unexpected server error or missing S3 bucket configuration.
           content:
@@ -138,7 +152,13 @@ paths:
                 success: false
                 message: S3_BUCKET is not configured.
         "502":
-          description: S3 could not store the uploaded object.
+          description: S3 storage or document processing failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: MongoDB or the local Ollama service is unavailable.
           content:
             application/json:
               schema:
@@ -152,7 +172,8 @@ paths:
         - Documents
       summary: Create a private, presigned S3 upload form
       description: >-
-        Creates a five-minute S3 POST form for one PDF, CSV, XLSX, or DOCX.
+        Creates a five-minute S3 POST form for one supported PDF, CSV, XLSX,
+        DOCX, PNG, JPG, TIFF, or BMP file.
         The form policy limits the object to 10 MB and requires server-side
         encryption. The object remains private; the presigned form is a
         temporary bearer capability to upload to one generated object key.
@@ -297,6 +318,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: MongoDB is not configured or available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/documents:
+    get:
+      tags:
+        - Documents
+      summary: List processed documents
+      description: Returns up to 100 most recently processed document summaries without parsed content or S3 object keys.
+      operationId: listDocuments
+      responses:
+        "200":
+          description: Recent document summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - documentId
+                        - fileName
+                        - fileType
+                        - createdAt
+                      properties:
+                        documentId:
+                          type: string
+                          format: uuid
+                        fileName:
+                          type: string
+                        fileType:
+                          $ref: "#/components/schemas/DocumentType"
+                        createdAt:
+                          type: string
+                          format: date-time
         "503":
           description: MongoDB is not configured or available.
           content:
@@ -591,11 +660,13 @@ components:
   schemas:
     DocumentType:
       type: string
+      description: Images are stored with the generic image type; their original extension is retained in the file name.
       enum:
         - pdf
         - csv
         - xlsx
         - docx
+        - image
     DocumentContentItem:
       type: object
       required:

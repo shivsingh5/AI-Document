@@ -69,7 +69,7 @@ async function getDatabase(): Promise<Db> {
     }
 
     const databaseName = process.env.MONGODB_DATABASE ?? "document_search";
-    const client = new MongoClient(uri);
+    const client = new MongoClient(uri, { serverSelectionTimeoutMS: 10_000 });
     mongoClient = client;
 
     databasePromise = client
@@ -80,7 +80,7 @@ async function getDatabase(): Promise<Db> {
         mongoClient = undefined;
         void client.close();
         throw new MongoStorageError(
-          "Could not connect to MongoDB.",
+          "Could not connect to MongoDB. Check MONGODB_URI, MongoDB network access/IP allowlist, and database availability.",
           { cause: error },
         );
       });

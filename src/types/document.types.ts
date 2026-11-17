@@ -1,4 +1,4 @@
-export type DocumentType = "pdf" | "csv" | "xlsx" | "docx";
+export type DocumentType = "pdf" | "csv" | "xlsx" | "docx" | "image";
 export const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
 
 export interface DocumentContentItem {

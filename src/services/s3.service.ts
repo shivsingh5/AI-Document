@@ -4,7 +4,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { basename } from "node:path";
+import { basename, extname } from "node:path";
 import { s3Bucket, s3Client } from "../config/s3.js";
 import {
   MAX_DOCUMENT_SIZE_BYTES,
@@ -12,12 +12,36 @@ import {
 } from "../types/document.types.js";
 import { S3StorageError } from "../types/s3.errors.js";
 
-const contentTypes: Record<DocumentType, string> = {
+const contentTypes: Record<Exclude<DocumentType, "image">, string> = {
   pdf: "application/pdf",
   csv: "text/csv; charset=utf-8",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
+const imageContentTypes: Record<string, string> = {
+  ".bmp": "image/bmp",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+};
+
+function getContentType(fileName: string, fileType: DocumentType): string {
+  if (fileType !== "image") {
+    return contentTypes[fileType];
+  }
+
+  const contentType = imageContentTypes[extname(fileName).toLowerCase()];
+  if (!contentType) {
+    throw new S3StorageError(
+      "Unsupported image format. Upload a PNG, JPG, TIFF, or BMP file.",
+      415,
+    );
+  }
+
+  return contentType;
+}
 
 export function getDocumentObjectKey(
   documentId: string,
@@ -43,7 +67,7 @@ export async function createDocumentUploadPost(
   fileType: DocumentType,
 ): Promise<{ key: string; url: string; fields: Record<string, string> }> {
   const key = getDocumentObjectKey(documentId, fileName);
-  const contentType = contentTypes[fileType];
+  const contentType = getContentType(fileName, fileType);
 
   try {
     const presignedPost = await createPresignedPost(s3Client, {
@@ -87,7 +111,7 @@ export async function storeDocumentInS3(
         Key: key,
         Body: file.buffer,
         ContentLength: file.size,
-        ContentType: contentTypes[fileType],
+        ContentType: getContentType(file.originalname, fileType),
         ContentDisposition: "attachment",
         ServerSideEncryption: "AES256",
       }),

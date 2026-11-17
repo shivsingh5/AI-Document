@@ -7,6 +7,7 @@ import {
   getExtractions,
   getDocument,
   getDocumentDownload,
+  listDocuments,
   searchDocument,
   uploadDocument,
 } from "../controllers/document.controller.js";
@@ -26,6 +27,7 @@ const documentRouter = Router();
 documentRouter.post("/upload-url", createUploadUrl);
 documentRouter.post("/complete", completeUpload);
 documentRouter.post("/upload", upload.single("file"), uploadDocument);
+documentRouter.get("/", listDocuments);
 documentRouter.get("/:documentId/extractions", getExtractions);
 documentRouter.post("/:documentId/extractions", extractDocumentFields);
 documentRouter.post("/:documentId/search", searchDocument);

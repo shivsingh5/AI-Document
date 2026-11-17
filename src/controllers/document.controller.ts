@@ -5,6 +5,7 @@ import {
   getDocumentDetails,
   getDocumentDownloadLink,
   getDocumentExtractions,
+  getDocuments,
   processDocument,
   reprocessDocumentExtractions,
   searchDocumentContent,
@@ -97,19 +98,20 @@ export async function getDocument(
   response.json({ success: true, data: document });
 }
 
+export async function listDocuments(
+  _request: Request,
+  response: Response,
+): Promise<void> {
+  const documents = await getDocuments();
+  response.json({ success: true, data: documents });
+}
+
 export async function getExtractions(
   request: Request,
   response: Response,
 ): Promise<void> {
   const documentId = getDocumentIdParam(request);
   const extractions = await getDocumentExtractions(documentId);
-
-  if (extractions.length === 0) {
-    throw new DocumentProcessingError(
-      "Extractions were not found for this document.",
-      404,
-    );
-  }
 
   response.json({ success: true, data: extractions });
 }
@@ -160,7 +162,7 @@ export async function uploadDocument(
 ): Promise<void> {
   if (!request.file) {
     throw new DocumentProcessingError(
-      "No file uploaded. Attach a PDF, CSV, XLSX, or DOCX using the 'file' field.",
+      "No file uploaded. Attach a PDF, CSV, XLSX, DOCX, PNG, JPG, TIFF, or BMP using the 'file' field.",
     );
   }
 
